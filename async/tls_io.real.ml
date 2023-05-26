@@ -100,6 +100,7 @@ let connect :
       >>| fun () -> (Ivar.fill [@alert "-deprecated"]) closed () );
     return (reader, writer, Ivar.read closed)
 
+
 let null_auth ?ip:_ ~host:_ _ = Ok None
 
 let make_default_client :
@@ -113,20 +114,60 @@ let make_default_client :
   let config = Tls.Config.client ?alpn_protocols ~authenticator:null_auth () in
   connect ~config ~socket ~where_to_connect ~host
 
-(* let make_server ?alpn_protocols ~certfile ~keyfile _socket =
-   Tls_async.X509_async.Certificate.of_pem_file certfile |>
-   Deferred.Or_error.ok_exn >>= fun certificate ->
-   Tls_async.X509_async.Private_key.of_pem_file keyfile |>
-   Deferred.Or_error.ok_exn >>= fun priv_key -> let _config = Tls.Config.(
-   server ?alpn_protocols ~version:(`TLS_1_0, `TLS_1_2) ~certificates:(`Single
-   (certificate, priv_key)) ~ciphers:Ciphers.supported ()) in failwithf
-   "Gluten_async.TLS.make_server: unimplemented" () *)
-
-let[@ocaml.warning "-21"] make_server
-    ?alpn_protocols:_
-    ~certfile:_
-    ~keyfile:_
-    _socket
+let reader_writer_of_sock
+    ?buffer_age_limit
+    ?reader_buffer_size
+    ?writer_buffer_size
+    s
   =
-  failwith "Tls_async Server not implemented";
-  fun _socket -> Core.failwith "Tls_async Server not implemented"
+  let fd = Socket.fd s in
+  ( Reader.create ?buf_len:reader_buffer_size fd
+  , Writer.create ?buffer_age_limit ?buf_len:writer_buffer_size fd )
+
+let listen :
+         config:Tls.Config.server
+      -> ([ `Unconnected ], [< Socket.Address.t ] as 'a) Socket.t
+      -> where_to_listen:('a, 'listening_on) Tcp.Where_to_listen.t
+      -> 'a descriptor Deferred.t
+  = fun ~config socket ~where_to_listen ->
+  let handler (_) (_ : Tls_async.Session.t) rd wr =
+    let pipe = Reader.pipe rd in
+    let rec read_from_pipe () =
+      Deferred.map (Pipe.read pipe) ~f:(
+                    fun a ->
+                    (match a with
+                     | `Ok line -> Writer.write wr line
+                     | `Eof -> ())
+                  )
+      >>= read_from_pipe
+    in
+    read_from_pipe ()
+  in
+  let on_handler_error = `Ignore in
+  Tls_async.listen ~socket ~on_handler_error config where_to_listen handler
+  >>= fun _server ->
+  let reader, writer = reader_writer_of_sock socket in
+  let closed = Ivar.create () in
+  don't_wait_for
+    ( Deferred.all_unit
+        [ Reader.close_finished reader; Writer.close_finished writer ]
+      >>| fun () -> Ivar.fill closed () );
+  return (reader, writer, Ivar.read closed)
+
+let make_server : ?alpn_protocols:string list ->
+    certfile:string ->
+    keyfile:string ->
+    ('a, 'listening_on) Tcp.Where_to_listen.t ->
+    ([ `Unconnected ], [< Socket.Address.t ] as 'a) Socket.t ->
+    'a descriptor Deferred.t
+  = fun ?alpn_protocols ~certfile ~keyfile where_to_listen socket ->
+  Tls_async.X509_async.Certificate.of_pem_file certfile
+  |> Deferred.Or_error.ok_exn >>= fun certificate ->
+  Tls_async.X509_async.Private_key.of_pem_file keyfile
+  |> Deferred.Or_error.ok_exn >>= fun priv_key ->
+  let config = Tls.Config.(server ?alpn_protocols
+        ~version:(`TLS_1_0, `TLS_1_3)
+        ~certificates:(`Single (certificate, priv_key))
+        ~ciphers:Ciphers.supported ())
+  in
+  listen ~config socket ~where_to_listen

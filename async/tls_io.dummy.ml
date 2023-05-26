@@ -42,14 +42,14 @@ module Io : Gluten_async_intf.IO with type 'a socket = 'a descriptor = struct
   let close _ = failwith "TLS not available"
 end
 
-let make_default_client ?alpn_protocols:_ ?host:_ _socket _where_to_connect =
+let make_default_client ?alpn_protocols:_ ?host:_ _where_to_connect _socket =
   failwith "TLS not available"
 
 let[@ocaml.warning "-21"] make_server
     ?alpn_protocols:_
     ~certfile:_
     ~keyfile:_
-    _socket
+    _where_to_listen
   =
   failwith "TLS not available";
   fun _socket -> failwith "TLS not available"
