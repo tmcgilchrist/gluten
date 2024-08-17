@@ -92,12 +92,12 @@ let reader_writer_of_sock
   ( Reader.create ?buf_len:reader_buffer_size fd
   , Writer.create ?buffer_age_limit ?buf_len:writer_buffer_size fd )
 
-let connect r w =
+let connect ?alpn_protocols r w =
   let net_to_ssl = Reader.pipe r in
   let ssl_to_net = Writer.pipe w in
   let app_to_ssl, app_wr = Pipe.create () in
   let app_rd, ssl_to_app = Pipe.create () in
-  Ssl.client ~app_to_ssl ~ssl_to_app ~net_to_ssl ~ssl_to_net ()
+  Ssl.client ?alpn_protocols ~app_to_ssl ~ssl_to_app ~net_to_ssl ~ssl_to_net ()
   |> Deferred.Or_error.ok_exn
   >>= fun _connection ->
   Reader.of_pipe (Info.of_string "httpaf_async_ssl_reader") app_rd
@@ -113,18 +113,17 @@ let connect r w =
   let writer = app_writer in
   reader, writer, Ivar.read closed_ivar
 
-(* XXX(anmonteiro): Unfortunately Async_ssl doesn't seem to support configuring
- * the ALPN protocols *)
-let make_default_client ?alpn_protocols:_ socket =
+let make_default_client ?alpn_protocols socket =
   let reader, writer = reader_writer_of_sock socket in
-  connect reader writer
+  connect ?alpn_protocols reader writer
 
-let listen ~crt_file ~key_file r w =
+let listen ?alpn_protocols ~crt_file ~key_file r w =
   let net_to_ssl = Reader.pipe r in
   let ssl_to_net = Writer.pipe w in
   let app_to_ssl, app_wr = Pipe.create () in
   let app_rd, ssl_to_app = Pipe.create () in
   Ssl.server
+    ?alpn_protocols
     ~crt_file
     ~key_file
     ~app_to_ssl
@@ -147,8 +146,6 @@ let listen ~crt_file ~key_file r w =
   let writer = app_writer in
   reader, writer, Ivar.read closed_ivar
 
-(* XXX(anmonteiro): Unfortunately Async_ssl doesn't seem to support configuring
- * the ALPN protocols *)
-let make_server ?alpn_protocols:_ ~certfile ~keyfile socket =
+let make_server ?alpn_protocols ~certfile ~keyfile socket =
   let reader, writer = reader_writer_of_sock socket in
-  listen ~crt_file:certfile ~key_file:keyfile reader writer
+  listen ?alpn_protocols ~crt_file:certfile ~key_file:keyfile reader writer
